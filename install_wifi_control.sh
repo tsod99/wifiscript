@@ -151,7 +151,16 @@ log_message "Making the script executable..."
 chmod +x /etc/config/wifi_control.sh
 
 log_message "Using rc.local for startup..."
-echo "/etc/config/wifi_control.sh &" >> /etc/rc.local
+# Remove any existing lines containing "wifi_control" in /etc/rc.local
+sed -i '/wifi_control/d' /etc/rc.local
+
+# Add the script to /etc/rc.local before the "exit 0" line
+if grep -q "exit 0" /etc/rc.local; then
+    sed -i '/exit 0/i /etc/config/wifi_control.sh &' /etc/rc.local
+else
+    echo "/etc/config/wifi_control.sh &" >> /etc/rc.local
+    echo "exit 0" >> /etc/rc.local
+fi
 
 log_message "Setup complete! Rebooting the router in 10 seconds..."
 sleep 10
