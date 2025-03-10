@@ -1,14 +1,57 @@
 #!/bin/sh
 
 LOG_FILE="/etc/config/wifi_control.log"
+MAX_LOG_SIZE=$((1 * 1024 * 1024))
 
 log_message() {
     echo "$(date): $1" >> "$LOG_FILE"
+    echo "$1"
+    
+    if [ $(stat -c%s "$LOG_FILE") -gt $MAX_LOG_SIZE ]; then
+        > "$LOG_FILE"
+        log_message "Log file cleared to prevent excessive growth."
+    fi
 }
 
 > "$LOG_FILE"
 
 log_message "Starting installation process..."
+
+log_message "Ensuring Wi-Fi radios are enabled..."
+if uci get wireless.radio0.disabled >/dev/null 2>&1 && [ "$(uci get wireless.radio0.disabled)" = "1" ]; then
+    log_message "2.4 GHz radio is disabled. Enabling it..."
+    uci set wireless.radio0.disabled='0'
+fi
+
+if uci get wireless.radio1.disabled >/dev/null 2>&1 && [ "$(uci get wireless.radio1.disabled)" = "1" ]; then
+    log_message "5 GHz radio is disabled. Enabling it..."
+    uci set wireless.radio1.disabled='0'
+fi
+
+if uci changes wireless >/dev/null 2>&1; then
+    log_message "Committing Wi-Fi configuration changes..."
+    if uci commit wireless; then
+        log_message "Wi-Fi configuration committed successfully."
+    else
+        log_message "ERROR: Failed to commit Wi-Fi configuration."
+        exit 1
+    fi
+fi
+
+log_message "Bringing up Wi-Fi radios..."
+if wifi; then
+    log_message "Wi-Fi radios brought up successfully."
+else
+    log_message "ERROR: Failed to bring up Wi-Fi radios."
+    exit 1
+fi
+
+if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+    log_message "Internet connection available. Proceeding with installation."
+else
+    log_message "ERROR: No internet connection. Cannot install tcpdump."
+    exit 1
+fi
 
 if opkg update >> "$LOG_FILE" 2>&1; then
     log_message "Package list updated successfully."
@@ -29,9 +72,16 @@ cat << 'EOF' > /etc/config/wifi_control.sh
 #!/bin/sh
 
 LOG_FILE="/etc/config/wifi_control.log"
+MAX_LOG_SIZE=$((1 * 1024 * 1024))
 
 log_message() {
     echo "$(date): $1" >> "$LOG_FILE"
+    echo "$1"
+    
+    if [ $(stat -c%s "$LOG_FILE") -gt $MAX_LOG_SIZE ]; then
+        > "$LOG_FILE"
+        log_message "Log file cleared to prevent excessive growth."
+    fi
 }
 
 CHECK_INTERVAL=15
@@ -40,12 +90,12 @@ BOOT_DURATION=120
 
 turn_on_wifi() {
     wifi up
-    log_message "Wi-Fi turned on."
+    log_message "Wi-Fi turned on (SSID broadcast enabled)."
 }
 
 turn_off_wifi() {
     wifi down
-    log_message "Wi-Fi turned off."
+    log_message "Wi-Fi turned off (SSID broadcast disabled)."
 }
 
 log_message "Router reboot detected. Keeping Wi-Fi on for $BOOT_DURATION seconds..."
@@ -53,17 +103,29 @@ turn_on_wifi
 sleep $BOOT_DURATION
 
 while true; do
-    connected_devices=$(iw dev wlan0 station dump | grep Station | wc -l)
+    if [ "$(uci get wireless.radio0.disabled 2>/dev/null)" = "1" ]; then
+        log_message "2.4 GHz Wi-Fi is currently disabled. Skipping connected devices check."
+    else
+        connected_devices_2g=$(iw dev wlan0 station dump | grep Station | wc -l)
+    fi
 
-    if [ "$connected_devices" -gt 0 ]; then
+    if [ "$(uci get wireless.radio1.disabled 2>/dev/null)" = "1" ]; then
+        log_message "5 GHz Wi-Fi is currently disabled. Skipping connected devices check."
+    else
+        connected_devices_5g=$(iw dev wlan1 station dump | grep Station | wc -l)
+    fi
+
+    if [ "$connected_devices_2g" -gt 0 ] || [ "$connected_devices_5g" -gt 0 ]; then
         log_message "Devices connected. Keeping Wi-Fi on."
         turn_on_wifi
         sleep $WAKE_DURATION
     else
-        probe_requests=$(tcpdump -i wlan0 -c 1 -e type mgt subtype probe-req 2>/dev/null | awk '/Probe Request/ {print $2, $10}')
+        probe_requests_2g=$(tcpdump -i wlan0 -c 1 -e type mgt subtype probe-req 2>/dev/null | awk '/Probe Request/ {print $2, $10}')
+        probe_requests_5g=$(tcpdump -i wlan1 -c 1 -e type mgt subtype probe-req 2>/dev/null | awk '/Probe Request/ {print $2, $10}')
         
-        if [ -n "$probe_requests" ]; then
-            log_message "Probe request detected from $probe_requests. Turning on Wi-Fi."
+        if [ -n "$probe_requests_2g" ] || [ -n "$probe_requests_5g" ]; then
+            log_message "Probe request detected. Waiting 2 seconds before turning on Wi-Fi."
+            sleep 2
             turn_on_wifi
             sleep $WAKE_DURATION
         else
@@ -77,30 +139,13 @@ done
 EOF
 
 log_message "Making the script executable..."
-if chmod +x /etc/config/wifi_control.sh >> "$LOG_FILE" 2>&1; then
-    log_message "Script made executable successfully."
-else
-    log_message "ERROR: Failed to make script executable."
-    exit 1
-fi
+chmod +x /etc/config/wifi_control.sh
 
-if grep -q "wifi_control.sh" /etc/rc.local; then
-    log_message "Old script entry found in /etc/rc.local. Deleting it..."
-    if sed -i '/wifi_control.sh/d' /etc/rc.local >> "$LOG_FILE" 2>&1; then
-        log_message "Old script entry removed successfully."
-    else
-        log_message "ERROR: Failed to remove old script entry."
-        exit 1
-    fi
-fi
+log_message "Using rc.local for startup..."
+sed -i '/wifi_control.sh/d' /etc/rc.local
 
-log_message "Adding the new script to startup..."
-if sed -i '/exit 0/i /etc/config/wifi_control.sh &' /etc/rc.local >> "$LOG_FILE" 2>&1; then
-    log_message "Script added to startup successfully."
-else
-    log_message "ERROR: Failed to add script to startup."
-    exit 1
-fi
+echo "/etc/config/wifi_control.sh &" >> /etc/rc.local
 
-log_message "Setup complete! Rebooting the router..."
+log_message "Setup complete! Rebooting the router in 10 seconds..."
+sleep 10
 reboot
