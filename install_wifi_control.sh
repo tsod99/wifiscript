@@ -1,13 +1,14 @@
 #!/bin/sh
 
 LOG_FILE="/etc/config/wifi_control.log"
-MAX_LOG_SIZE=$((1 * 1024 * 1024))
+MAX_LOG_SIZE=$((1 * 1024 * 1024))  # 1 MB in bytes
 
 log_message() {
     echo "$(date): $1" >> "$LOG_FILE"
     echo "$1"
     
-    if [ $(stat -c%s "$LOG_FILE") -gt $MAX_LOG_SIZE ]; then
+    log_size=$(wc -c < "$LOG_FILE" 2>/dev/null)
+    if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
         > "$LOG_FILE"
         log_message "Log file cleared to prevent excessive growth."
     fi
@@ -16,6 +17,13 @@ log_message() {
 > "$LOG_FILE"
 
 log_message "Starting installation process..."
+
+log_message "Cleaning up existing wifi_control scripts and configurations..."
+# Delete any files starting with "wifi_control" in /etc/config
+find /etc/config -name 'wifi_control*' -exec rm -f {} \;
+
+# Remove any lines containing "wifi_control" in /etc/rc.local
+sed -i '/wifi_control/d' /etc/rc.local
 
 log_message "Ensuring Wi-Fi radios are enabled..."
 if uci get wireless.radio0.disabled >/dev/null 2>&1 && [ "$(uci get wireless.radio0.disabled)" = "1" ]; then
@@ -78,7 +86,8 @@ log_message() {
     echo "$(date): $1" >> "$LOG_FILE"
     echo "$1"
     
-    if [ $(stat -c%s "$LOG_FILE") -gt $MAX_LOG_SIZE ]; then
+    log_size=$(wc -c < "$LOG_FILE" 2>/dev/null)
+    if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
         > "$LOG_FILE"
         log_message "Log file cleared to prevent excessive growth."
     fi
@@ -142,8 +151,6 @@ log_message "Making the script executable..."
 chmod +x /etc/config/wifi_control.sh
 
 log_message "Using rc.local for startup..."
-sed -i '/wifi_control.sh/d' /etc/rc.local
-
 echo "/etc/config/wifi_control.sh &" >> /etc/rc.local
 
 log_message "Setup complete! Rebooting the router in 10 seconds..."
