@@ -20,7 +20,8 @@ log_message "Starting installation process..."
 
 log_message "Installing required packages..."
 opkg update >> "$LOG_FILE" 2>&1
-opkg install iw tcpdump >> "$LOG_FILE" 2>&1
+opkg install iw >> "$LOG_FILE" 2>&1
+opkg install tcpdump >> "$LOG_FILE" 2>&1
 
 log_message "Ensuring Wi-Fi radios are enabled..."
 uci set wireless.radio0.disabled='0' 2>/dev/null
