@@ -20,7 +20,17 @@ log_message "Starting installation process..."
 
 log_message "Installing required packages..."
 opkg update >> "$LOG_FILE" 2>&1
-opkg install iw >> "$LOG_FILE" 2>&1
+opkg install iw tcpdump >> "$LOG_FILE" 2>&1
+
+log_message "Ensuring Wi-Fi radios are enabled..."
+uci set wireless.radio0.disabled='0' 2>/dev/null
+uci set wireless.radio1.disabled='0' 2>/dev/null
+uci commit wireless
+wifi reload
+
+log_message "Bringing up Wi-Fi radios..."
+wifi
+sleep 5
 
 log_message "Checking for Wi-Fi interfaces..."
 INTERFACES=$(iw dev | grep Interface | awk '{print $2}')
@@ -35,21 +45,11 @@ if [ -z "$INTERFACES" ]; then
     INTERFACES=$(iw dev | grep Interface | awk '{print $2}')
     if [ -z "$INTERFACES" ]; then
         log_message "ERROR: No Wi-Fi interfaces found even after driver installation. Exiting."
-        exit 1
     fi
 else
     log_message "Wi-Fi interfaces found: $INTERFACES"
 fi
 
-log_message "Ensuring Wi-Fi radios are enabled..."
-uci set wireless.radio0.disabled='0' 2>/dev/null
-uci set wireless.radio1.disabled='0' 2>/dev/null
-uci commit wireless
-wifi reload
-
-log_message "Bringing up Wi-Fi radios..."
-wifi
-sleep 5
 
 if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
     log_message "Internet connection available. Proceeding with installation."
@@ -57,8 +57,6 @@ else
     log_message "ERROR: No internet connection. Cannot install tcpdump."
     exit 1
 fi
-
-opkg install tcpdump >> "$LOG_FILE" 2>&1
 
 log_message "Creating new Wi-Fi control script..."
 cat << 'EOF' > /etc/config/wifi_control.sh
@@ -79,7 +77,7 @@ log_message() {
 }
 
 CHECK_INTERVAL=15
-WAKE_DURATION=420  # 7 minutes
+WAKE_DURATION=60  # 7 minutes
 BOOT_DURATION=420  # 7 minutes
 
 turn_on_wifi() {
@@ -92,7 +90,7 @@ turn_off_wifi() {
     log_message "Wi-Fi turned off (SSID broadcast disabled)."
 }
 
-log_message "Router reboot detected. Keeping Wi-Fi on for $BOOT_DURATION seconds..."
+log_message "Router reboot detected."
 turn_on_wifi
 sleep $BOOT_DURATION
 
@@ -114,7 +112,7 @@ while true; do
         PROBE_REQUESTS=0
 
         for iface in $INTERFACES; do
-            if tcpdump -i $iface -c 1 -e type mgt subtype probe-req 2>/dev/null | grep -q "Probe Request"; then
+            if timeout 15 tcpdump -i $iface -e type mgt subtype probe-req 2>/dev/null | grep -q "Probe Request"; then
                 PROBE_REQUESTS=1
                 break
             fi
@@ -125,7 +123,7 @@ while true; do
             turn_on_wifi
             sleep $WAKE_DURATION
         else
-            log_message "No probe requests detected. Turning Wi-Fi off."
+            log_message "No probe requests detected in the last 15 seconds. Turning Wi-Fi off."
             turn_off_wifi
         fi
     fi
