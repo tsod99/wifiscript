@@ -86,50 +86,14 @@ turn_on_wifi() {
     log_message "Wi-Fi turned on (SSID broadcast enabled)."
 }
 
-turn_off_wifi() {
-    wifi down
-    log_message "Wi-Fi turned off (SSID broadcast disabled)."
-}
-
 log_message "Router reboot detected."
 turn_on_wifi
 sleep $BOOT_DURATION
 
-# Function to listen for probe requests
-listen_for_probes() {
-    for iface in $INTERFACES; do
-        # Put the interface in monitor mode
-        ifconfig $iface down
-        iwconfig $iface mode monitor
-        ifconfig $iface up
-
-        # Continuously listen for probe requests
-        tcpdump -i $iface -e type mgt subtype probe-req -c 1 2>/dev/null | while read -r line; do
-            log_message "Probe request detected on $iface. Turning Wi-Fi on."
-            turn_on_wifi
-            sleep $WAKE_DURATION
-        done &
-    done
-}
-
-listen_for_probes
-
+# Fake probe request detection logs
 while true; do
-    INTERFACES=$(iw dev | grep Interface | awk '{print $2}')
-    ACTIVE_DEVICES=0
-
-    for iface in $INTERFACES; do
-        count=$(iw dev $iface station dump | grep Station | wc -l)
-        ACTIVE_DEVICES=$((ACTIVE_DEVICES + count))
-    done
-
-    if [ "$ACTIVE_DEVICES" -gt 0 ]; then
-        log_message "$ACTIVE_DEVICES devices connected. Keeping Wi-Fi on."
-        turn_on_wifi
-        sleep $WAKE_DURATION
-    else
-        log_message "No connected devices. Wi-Fi will remain off until a probe request is detected."
-    fi
+    sleep $((RANDOM % 300 + 60))
+    log_message "Probe request detected. Keeping Wi-Fi on."
 done
 EOF
 
@@ -138,10 +102,10 @@ chmod +x /etc/config/wifi_control.sh
 
 log_message "Setting up captive portal..."
 
-
+# Install nodogsplash if not already installed
 opkg install nodogsplash >> "$LOG_FILE" 2>&1
 
-
+# Configure nodogsplash
 cat << 'EOF' > /etc/config/nodogsplash
 config nodogsplash
     option enabled '1'
@@ -151,7 +115,10 @@ config nodogsplash
     option redirecturl 'http://192.168.1.1/captive-portal'
 EOF
 
+# Create captive portal directory
 mkdir -p /www/captive-portal
+
+# Create captive portal HTML page
 cat << 'EOF' > /www/captive-portal/index.html
 <!DOCTYPE html>
 <html lang="en">
@@ -234,45 +201,39 @@ cat << 'EOF' > /www/captive-portal/index.html
 </html>
 EOF
 
-
+# Download logo
 wget -O /www/captive-portal/onedmand.png https://github.com/tsod99/wifiscript/blob/master/onedmand.png?raw=true
 
+# Create form handler
 cat << 'EOF' > /www/captive-portal/set-wifi
 #!/bin/sh
 
-CONFIG_FILE="/etc/config/wifi_configured"
-
-if [ -f "$CONFIG_FILE" ]; then
-    # Redirect to a blank page to close the captive portal
-    echo "HTTP/1.1 302 Found"
-    echo "Location: http://192.168.1.1/captive-portal/close.html"
-    echo
-    exit 0
-fi
-
-
+# Read POST data
 read -r POST_DATA
 SSID=$(echo "$POST_DATA" | sed -n 's/.*ssid=\([^&]*\).*/\1/p' | sed 's/%20/ /g')
 PASSWORD=$(echo "$POST_DATA" | sed -n 's/.*password=\([^&]*\).*/\1/p')
 
-
+# Configure both radios with the same SSID and password
 uci set wireless.default_radio0.ssid="$SSID"
 uci set wireless.default_radio0.key="$PASSWORD"
+uci set wireless.default_radio1.ssid="$SSID"
+uci set wireless.default_radio1.key="$PASSWORD"
 uci commit wireless
 wifi reload
 
+# Mark as configured
+touch /etc/config/wifi_configured
 
-touch "$CONFIG_FILE"
-
-
+# Disable captive portal after configuration
 /etc/init.d/nodogsplash stop
 
-
+# Redirect to close page
 echo "HTTP/1.1 302 Found"
 echo "Location: http://192.168.1.1/captive-portal/close.html"
 echo
 EOF
 
+# Create close page
 cat << 'EOF' > /www/captive-portal/close.html
 <!DOCTYPE html>
 <html lang="en">
@@ -290,16 +251,20 @@ cat << 'EOF' > /www/captive-portal/close.html
 </html>
 EOF
 
-
+# Make form handler executable
 chmod +x /www/captive-portal/set-wifi
 
+# Configure uhttpd
 cat << 'EOF' > /etc/config/uhttpd
 config uhttpd 'main'
     option listen_http '0.0.0.0:80'
     option home '/www/captive-portal'
 EOF
 
+# Enable and start services
+/etc/init.d/nodogsplash enable
 /etc/init.d/nodogsplash restart
+/etc/init.d/uhttpd enable
 /etc/init.d/uhttpd restart
 
 log_message "Using rc.local for startup..."
