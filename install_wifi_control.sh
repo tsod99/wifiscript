@@ -1,9 +1,8 @@
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-#check command success
 check_success() {
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Success${NC}"
@@ -24,7 +23,6 @@ if [ $? -ne 0 ]; then
 else
     echo -e "${GREEN}✓ Connected${NC}"
 fi
-
 
 echo -n "[2/8] Updating package lists... "
 opkg update >/dev/null 2>&1
@@ -116,7 +114,6 @@ cat > /etc/nodogsplash/splash.html <<EOL
 EOL
 check_success
 
-
 echo -n "[8/8] Configuring WiFi settings and handler... "
 
 uci set wireless.@wifi-iface[0].ssid="On Demand WIFI"
@@ -142,11 +139,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     cat <<EOF
 HTTP/1.1 200 OK
 Content-Type: text/html
+Refresh: 5;url=about:blank
 
 <!DOCTYPE html>
 <html>
 <head>
     <title>WiFi Setup Complete</title>
+    <script>
+        setTimeout(function() {
+            window.close();
+        }, 3000);
+    </script>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
         h1 { color: #4CAF50; }
@@ -155,7 +158,7 @@ Content-Type: text/html
 <body>
     <h1>✓ WiFi Setup Complete</h1>
     <p>Your new WiFi network <strong>$SSID</strong> is ready to use!</p>
-    <p>You can now connect with the password you set.</p>
+    <p>This window will close automatically...</p>
 </body>
 </html>
 EOF
