@@ -1,281 +1,176 @@
-#!/bin/sh
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-LOG_FILE="/etc/config/wifi_control.log"
-MAX_LOG_SIZE=$((1 * 1024 * 1024))  # 1 MB in bytes
-
-log_message() {
-    echo "$(date): $1" >> "$LOG_FILE"
-    echo "$1"
-    
-    log_size=$(wc -c < "$LOG_FILE" 2>/dev/null)
-    if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
-        > "$LOG_FILE"
-        log_message "Log file cleared to prevent excessive growth."
+#check command success
+check_success() {
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ Success${NC}"
+    else
+        echo -e "${RED}✗ Failed${NC}"
+        exit 1
     fi
 }
 
-> "$LOG_FILE"
+echo -e "\n${YELLOW}=== On Demand WIFI Portal Setup ===${NC}\n"
 
-log_message "Starting installation process..."
-
-log_message "Installing required packages..."
-opkg update >> "$LOG_FILE" 2>&1
-opkg install iw >> "$LOG_FILE" 2>&1
-opkg install tcpdump >> "$LOG_FILE" 2>&1
-opkg install nodogsplash >> "$LOG_FILE" 2>&1  # Captive portal
-opkg install uhttpd >> "$LOG_FILE" 2>&1       # Web server for captive portal
-
-log_message "Ensuring Wi-Fi radios are enabled..."
-uci set wireless.radio0.disabled='0' 2>/dev/null
-uci set wireless.radio1.disabled='0' 2>/dev/null
-uci commit wireless
-wifi reload
-
-log_message "Bringing up Wi-Fi radios..."
-wifi
-sleep 5
-
-log_message "Checking for Wi-Fi interfaces..."
-INTERFACES=$(iw dev | grep Interface | awk '{print $2}')
-
-if [ -z "$INTERFACES" ]; then
-    log_message "No Wi-Fi interfaces detected. Attempting to install drivers..."
-    opkg update >> "$LOG_FILE" 2>&1
-    opkg install kmod-mt76 >> "$LOG_FILE" 2>&1
-    sleep 5
-    wifi reload
-    sleep 5
-    INTERFACES=$(iw dev | grep Interface | awk '{print $2}')
-    if [ -z "$INTERFACES" ]; then
-        log_message "ERROR: No Wi-Fi interfaces found even after driver installation. Exiting."
-    fi
-else
-    log_message "Wi-Fi interfaces found: $INTERFACES"
-fi
-
-if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
-    log_message "Internet connection available. Proceeding with installation."
-else
-    log_message "ERROR: No internet connection. Cannot install tcpdump."
+echo -n "[1/8] Checking internet connection... "
+ping -c 1 -W 3 google.com >/dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo -e "${RED}✗ No internet access${NC}"
+    echo -e "${YELLOW}Please configure network connectivity first!${NC}"
     exit 1
+else
+    echo -e "${GREEN}✓ Connected${NC}"
 fi
 
-log_message "Creating new Wi-Fi control script..."
-cat << 'EOF' > /etc/config/wifi_control.sh
-#!/bin/sh
 
-LOG_FILE="/etc/config/wifi_control.log"
-MAX_LOG_SIZE=$((1 * 1024 * 1024))
+echo -n "[2/8] Updating package lists... "
+opkg update >/dev/null 2>&1
+check_success
 
-log_message() {
-    echo "$(date): $1" >> "$LOG_FILE"
-    echo "$1"
-    
-    log_size=$(wc -c < "$LOG_FILE" 2>/dev/null)
-    if [ "$log_size" -gt "$MAX_LOG_SIZE" ]; then
-        > "$LOG_FILE"
-        log_message "Log file cleared to prevent excessive growth."
-    fi
+echo -n "[3/8] Installing nodogsplash... "
+opkg install nodogsplash >/dev/null 2>&1
+check_success
+
+echo -n "[4/8] Installing wget... "
+opkg install wget >/dev/null 2>&1
+check_success
+
+echo -n "[5/8] Installing base64... "
+opkg install coreutils-base64 >/dev/null 2>&1
+check_success
+
+echo -n "[6/8] Configuring captive portal... "
+cat > /etc/nodogsplash/nodogsplash.conf <<'EOL' && \
+mkdir -p /etc/nodogsplash
+GatewayInterface br-lan
+GatewayAddress 192.168.1.1
+MaxClients 250
+AuthIdleTimeout 480
+ClientIdleTimeout 60
+ForcedRedirectDomain https://www.openwrt.org
+PreAuthIdleTimeout 60
+RedirectURL https://www.openwrt.org
+TrafficControl yes
+TrafficControlLimitUpload 0
+TrafficControlLimitDownload 0
+TrafficControlLimitBurst 0
+
+FirewallRuleSet authenticated-users {
+    FirewallRule allow to 0.0.0.0/0
 }
 
-WAKE_DURATION=360
-BOOT_DURATION=1200  # 20 minutes
-
-turn_on_wifi() {
-    wifi up
-    log_message "Wi-Fi turned on (SSID broadcast enabled)."
+FirewallRuleSet preauthenticated-users {
+    FirewallRule allow to 192.168.1.1
+    FirewallRule allow udp port 53
+    FirewallRule allow tcp port 53
+    FirewallRule allow tcp port 80
 }
 
-log_message "Router reboot detected."
-turn_on_wifi
-sleep $BOOT_DURATION
+FirewallRuleSet validating-users {
+    FirewallRule allow to 0.0.0.0/0
+}
 
-# Fake probe request detection logs
-while true; do
-    sleep $((RANDOM % 300 + 60))
-    log_message "Probe request detected. Keeping Wi-Fi on."
-done
-EOF
+FirewallRuleSet users {
+    FirewallRule allow to 0.0.0.0/0
+}
+EOL
+check_success
 
-log_message "Making the script executable..."
-chmod +x /etc/config/wifi_control.sh
-
-log_message "Setting up captive portal..."
-
-# Install nodogsplash if not already installed
-opkg install nodogsplash >> "$LOG_FILE" 2>&1
-
-# Configure nodogsplash
-cat << 'EOF' > /etc/config/nodogsplash
-config nodogsplash
-    option enabled '1'
-    option gatewayinterface 'br-lan'
-    option maxclients '250'
-    option authentication 'on'
-    option redirecturl 'http://192.168.1.1/captive-portal'
-EOF
-
-# Create captive portal directory
-mkdir -p /www/captive-portal
-
-# Create captive portal HTML page
-cat << 'EOF' > /www/captive-portal/index.html
+echo -n "[7/8] Downloading and configuring logo... "
+LOGO_URL="https://github.com/tsod99/wifiscript/raw/master/onedmand.png"
+LOGO_PATH="/etc/nodogsplash/logo.png"
+wget -q "$LOGO_URL" -O "$LOGO_PATH" && \
+LOGO_BASE64=$(base64 -w 0 "$LOGO_PATH") && \
+cat > /etc/nodogsplash/splash.html <<EOL
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
+    <title>On Demand WIFI Setup</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wi-Fi Setup</title>
     <style>
-        body {
-            font-family: 'Arial', sans-serif;
-            background-color: #f4f4f4;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .container {
-            background: white;
-            padding: 40px;
-            border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
-            text-align: center;
-            max-width: 400px;
-            width: 100%;
-        }
-        .logo {
-            max-width: 150px;
-            margin-bottom: 20px;
-        }
-        h1 {
-            font-size: 24px;
-            margin-bottom: 20px;
-            color: #333;
-        }
-        input {
-            width: 100%;
-            padding: 12px;
-            margin: 10px 0;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            font-size: 16px;
-        }
-        input:focus {
-            border-color: #007bff;
-            outline: none;
-        }
-        button {
-            background-color: #007bff;
-            color: white;
-            padding: 12px 24px;
-            border: none;
-            border-radius: 6px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: background-color 0.3s ease;
-        }
-        button:hover {
-            background-color: #0056b3;
-        }
-        .footer {
-            margin-top: 20px;
-            font-size: 14px;
-            color: #777;
-        }
+        body { font-family: Arial, sans-serif; text-align: center; margin: 0; padding: 20px; }
+        .container { max-width: 500px; margin: 0 auto; }
+        img { max-width: 100%; height: auto; margin-bottom: 20px; }
+        form { background: #f9f9f9; padding: 20px; border-radius: 5px; }
+        input { margin: 10px 0; padding: 8px; width: 100%; box-sizing: border-box; }
+        button { background: #0066cc; color: white; border: none; padding: 10px 15px; cursor: pointer; }
     </style>
 </head>
 <body>
     <div class="container">
-        <img src="/captive-portal/onedmand.png" alt="Company Logo" class="logo">
-        <h1>Set Up Your Wi-Fi</h1>
-        <form action="/set-wifi" method="post">
-            <input type="text" name="ssid" placeholder="Wi-Fi Name (SSID)" required>
-            <input type="password" name="password" placeholder="Wi-Fi Password" required>
-            <button type="submit">Save & Connect</button>
+        <img src="data:image/png;base64,$LOGO_BASE64" alt="On Demand WIFI Logo">
+        <h1>On Demand WIFI Setup</h1>
+        <p>Please configure your WiFi network</p>
+        
+        <form action="/setwifi" method="post">
+            <input type="text" name="ssid" placeholder="WiFi Name (SSID)" required value="On Demand WIFI">
+            <input type="password" name="password" placeholder="Password" required>
+            <button type="submit">Save Settings</button>
         </form>
-        <div class="footer">After setting up the credentials, please connect again.</div>
     </div>
 </body>
 </html>
-EOF
+EOL
+check_success
 
-# Download logo
-wget -O /www/captive-portal/onedmand.png https://github.com/tsod99/wifiscript/blob/master/onedmand.png?raw=true
 
-# Create form handler
-cat << 'EOF' > /www/captive-portal/set-wifi
+echo -n "[8/8] Configuring WiFi settings and handler... "
+
+uci set wireless.@wifi-iface[0].ssid="On Demand WIFI"
+uci commit wireless
+
+cat > /etc/nodogsplash/setwifi <<'EOL' && \
+chmod +x /etc/nodogsplash/setwifi
 #!/bin/sh
 
-# Read POST data
-read -r POST_DATA
-SSID=$(echo "$POST_DATA" | sed -n 's/.*ssid=\([^&]*\).*/\1/p' | sed 's/%20/ /g')
-PASSWORD=$(echo "$POST_DATA" | sed -n 's/.*password=\([^&]*\).*/\1/p')
+if [ "$REQUEST_METHOD" = "POST" ]; then
+    SSID=$(echo "$QUERY_STRING" | sed -n 's/.*ssid=\([^&]*\).*/\1/p' | sed 's/%20/ /g')
+    PASSWORD=$(echo "$QUERY_STRING" | sed -n 's/.*password=\([^&]*\).*/\1/p')
+    
+    uci set wireless.@wifi-iface[0].ssid="$SSID"
+    uci set wireless.@wifi-iface[0].key="$PASSWORD"
+    uci commit wireless
+    
+    /etc/init.d/network restart
+    
+    /etc/init.d/nodogsplash disable
+    /etc/init.d/nodogsplash stop
+    
+    cat <<EOF
+HTTP/1.1 200 OK
+Content-Type: text/html
 
-# Configure both radios with the same SSID and password
-uci set wireless.default_radio0.ssid="$SSID"
-uci set wireless.default_radio0.key="$PASSWORD"
-uci set wireless.default_radio1.ssid="$SSID"
-uci set wireless.default_radio1.key="$PASSWORD"
-uci commit wireless
-wifi reload
-
-# Mark as configured
-touch /etc/config/wifi_configured
-
-# Disable captive portal after configuration
-/etc/init.d/nodogsplash stop
-
-# Redirect to close page
-echo "HTTP/1.1 302 Found"
-echo "Location: http://192.168.1.1/captive-portal/close.html"
-echo
-EOF
-
-# Create close page
-cat << 'EOF' > /www/captive-portal/close.html
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Close</title>
+    <title>WiFi Setup Complete</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
+        h1 { color: #4CAF50; }
+    </style>
 </head>
 <body>
-    <script>
-        // Close the captive portal window
-        window.close();
-    </script>
+    <h1>✓ WiFi Setup Complete</h1>
+    <p>Your new WiFi network <strong>$SSID</strong> is ready to use!</p>
+    <p>You can now connect with the password you set.</p>
 </body>
 </html>
 EOF
-
-# Make form handler executable
-chmod +x /www/captive-portal/set-wifi
-
-# Configure uhttpd
-cat << 'EOF' > /etc/config/uhttpd
-config uhttpd 'main'
-    option listen_http '0.0.0.0:80'
-    option home '/www/captive-portal'
-EOF
-
-# Enable and start services
-/etc/init.d/nodogsplash enable
-/etc/init.d/nodogsplash restart
-/etc/init.d/uhttpd enable
-/etc/init.d/uhttpd restart
-
-log_message "Using rc.local for startup..."
-sed -i '/wifi_control/d' /etc/rc.local
-if grep -q "exit 0" /etc/rc.local; then
-    sed -i '/exit 0/i /etc/config/wifi_control.sh &' /etc/rc.local
-else
-    echo "/etc/config/wifi_control.sh &" >> /etc/rc.local
-    echo "exit 0" >> /etc/rc.local
+    exit 0
 fi
+EOL
+check_success
 
-log_message "Setup complete! Rebooting the router in 10 seconds..."
-sleep 10
-reboot
+echo -n "Starting captive portal service... "
+/etc/init.d/nodogsplash enable >/dev/null 2>&1 && \
+/etc/init.d/nodogsplash restart >/dev/null 2>&1
+check_success
+
+echo -e "\n${GREEN}=== Setup Completed Successfully ===${NC}"
+echo -e "${YELLOW}On Demand WIFI portal is now active!${NC}"
+echo -e "Default WiFi Name (SSID): ${YELLOW}On Demand WIFI${NC}"
+echo -e "To check status: ${YELLOW}service nodogsplash status${NC}"
+echo -e "To view logs: ${YELLOW}logread | grep nodogsplash${NC}"
