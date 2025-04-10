@@ -48,16 +48,11 @@ mkdir -p /etc/nodogsplash
 cat > /etc/nodogsplash/nodogsplash.conf <<'EOL'
 GatewayInterface br-lan
 GatewayAddress 192.168.1.1
+SplashPage splash.html
+AuthenticateImmediately yes
 MaxClients 250
 AuthIdleTimeout 480
 ClientIdleTimeout 60
-ForcedRedirectDomain https://www.openwrt.org
-PreAuthIdleTimeout 60
-RedirectURL https://www.openwrt.org
-TrafficControl yes
-TrafficControlLimitUpload 0
-TrafficControlLimitDownload 0
-TrafficControlLimitBurst 0
 
 FirewallRuleSet authenticated-users {
     FirewallRule allow to 0.0.0.0/0
@@ -68,6 +63,7 @@ FirewallRuleSet preauthenticated-users {
     FirewallRule allow udp port 53
     FirewallRule allow tcp port 53
     FirewallRule allow tcp port 80
+    FirewallRule allow tcp port 2050
 }
 
 FirewallRuleSet validating-users {
@@ -84,13 +80,12 @@ echo -n "[7/8] Downloading and configuring logo... "
 LOGO_URL="https://github.com/tsod99/wifiscript/raw/master/onedmand.png"
 LOGO_PATH="/etc/nodogsplash/logo.png"
 
-wget -q "$LOGO_URL" -O "$LOGO_PATH"
-if [ $? -ne 0 ]; then
-    echo -e "${RED}✗ Failed to download logo${NC}"
-    exit 1
-fi
+wget -q "$LOGO_URL" -O "$LOGO_PATH" || {
+    # Fallback if download fails
+    echo -n "[Using fallback logo] "
+    touch "$LOGO_PATH"
+}
 
-# Use -w 0 if supported, fallback otherwise
 LOGO_BASE64=$(base64 -w 0 "$LOGO_PATH" 2>/dev/null || base64 "$LOGO_PATH")
 cat > /etc/nodogsplash/splash.html <<EOL
 <!DOCTYPE html>
@@ -113,7 +108,9 @@ cat > /etc/nodogsplash/splash.html <<EOL
         <h1>On Demand WIFI Setup</h1>
         <p>Please configure your WiFi network</p>
         
-        <form action="/setwifi" method="post">
+        <form action="/nodogsplash/auth" method="post">
+            <input type="hidden" name="tok" value="$tok">
+            <input type="hidden" name="redir" value="http://192.168.1.1/setwifi">
             <input type="text" name="ssid" placeholder="WiFi Name (SSID)" required value="On Demand WIFI">
             <input type="password" name="password" placeholder="Password" required>
             <button type="submit">Save Settings</button>
@@ -129,10 +126,10 @@ echo -n "[8/8] Configuring WiFi settings and handler... "
 # Set default WiFi settings (temporary until user changes them)
 uci set wireless.@wifi-iface[0].ssid="On Demand WIFI"
 uci set wireless.@wifi-iface[0].encryption="psk2"
-uci set wireless.@wifi-iface[0].key=""  # Temporary default
+uci set wireless.@wifi-iface[0].key="ondemand123"
 uci commit wireless
 
-# Create the WiFi setup handler (THIS IS WHERE THE MAGIC HAPPENS)
+# Create the WiFi setup handler
 cat > /etc/nodogsplash/setwifi <<'EOL'
 #!/bin/sh
 
