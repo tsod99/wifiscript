@@ -129,7 +129,7 @@ echo -n "[8/8] Configuring WiFi settings and handler... "
 # Set default WiFi settings (temporary until user changes them)
 uci set wireless.@wifi-iface[0].ssid="On Demand WIFI"
 uci set wireless.@wifi-iface[0].encryption="psk2"
-uci set wireless.@wifi-iface[0].key="temp_password"  # Temporary default
+uci set wireless.@wifi-iface[0].key=""  # Temporary default
 uci commit wireless
 
 # Create the WiFi setup handler (THIS IS WHERE THE MAGIC HAPPENS)
