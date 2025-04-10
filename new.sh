@@ -126,25 +126,36 @@ check_success $?
 
 echo -n "[8/8] Configuring WiFi settings and handler... "
 
+# Set default WiFi settings (temporary until user changes them)
 uci set wireless.@wifi-iface[0].ssid="On Demand WIFI"
+uci set wireless.@wifi-iface[0].encryption="psk2"
+uci set wireless.@wifi-iface[0].key="temp_password"  # Temporary default
 uci commit wireless
 
+# Create the WiFi setup handler (THIS IS WHERE THE MAGIC HAPPENS)
 cat > /etc/nodogsplash/setwifi <<'EOL'
 #!/bin/sh
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
+    # Get SSID and password from form
     SSID=$(echo "$QUERY_STRING" | sed -n 's/.*ssid=\([^&]*\).*/\1/p' | sed 's/%20/ /g')
     PASSWORD=$(echo "$QUERY_STRING" | sed -n 's/.*password=\([^&]*\).*/\1/p')
 
+    # Permanently set new WiFi credentials
     uci set wireless.@wifi-iface[0].ssid="$SSID"
     uci set wireless.@wifi-iface[0].key="$PASSWORD"
     uci commit wireless
 
+    # COMPLETELY REMOVE NODOGSPLASH (so it never comes back)
+    /etc/init.d/nodogsplash stop
+    /etc/init.d/nodogsplash disable
+    opkg remove --autoremove nodogsplash
+    rm -rf /etc/nodogsplash
+
+    # Restart network to apply changes
     /etc/init.d/network restart
 
-    /etc/init.d/nodogsplash disable
-    /etc/init.d/nodogsplash stop
-
+    # Show success page
     cat <<EOF
 HTTP/1.1 200 OK
 Content-Type: text/html
@@ -154,19 +165,19 @@ Refresh: 5;url=about:blank
 <html>
 <head>
     <title>WiFi Setup Complete</title>
-    <script>
-        setTimeout(function() {
-            window.close();
-        }, 3000);
-    </script>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 50px; }
         h1 { color: #4CAF50; }
     </style>
+    <script>
+        setTimeout(function() {
+            window.close();
+        }, 5000);
+    </script>
 </head>
 <body>
     <h1>✓ WiFi Setup Complete</h1>
-    <p>Your new WiFi network <strong>$SSID</strong> is ready to use!</p>
+    <p>Your new WiFi network <strong>$SSID</strong> is now active!</p>
     <p>This window will close automatically...</p>
 </body>
 </html>
@@ -178,14 +189,11 @@ EOL
 chmod +x /etc/nodogsplash/setwifi
 check_success $?
 
-echo -n "Starting captive portal service... "
-/etc/init.d/nodogsplash enable >/dev/null 2>&1 && \
-/etc/init.d/nodogsplash restart >/dev/null 2>&1
-check_success $?
+# Start nodogsplash (it will self-destruct after setup)
+/etc/init.d/nodogsplash enable
+/etc/init.d/nodogsplash restart
 
 echo -e "\n${GREEN}=== Setup Completed Successfully ===${NC}"
 echo -e "${YELLOW}On Demand WIFI portal is now active!${NC}"
-echo -e "Default WiFi Name (SSID): ${YELLOW}On Demand WIFI${NC}"
-echo -e "To check status: ${YELLOW}service nodogsplash status${NC}"
-echo -e "To view logs: ${YELLOW}logread | grep nodogsplash${NC}"
-
+echo -e "Connect to '${YELLOW}On Demand WIFI${NC}' to configure your network"
+echo -e "${RED}After setup, the portal will permanently disable itself${NC}"
