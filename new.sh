@@ -48,7 +48,7 @@ mkdir -p /etc/nodogsplash
 cat > /etc/nodogsplash/nodogsplash.conf <<'EOL'
 GatewayInterface br-lan
 GatewayAddress 192.168.1.1
-SplashPage splash.html
+SplashPage /etc/nodogsplash/htdocs/splash.html
 AuthenticateImmediately yes
 MaxClients 250
 AuthIdleTimeout 480
@@ -81,12 +81,12 @@ LOGO_URL="https://github.com/tsod99/wifiscript/raw/master/onedmand.png"
 LOGO_PATH="/etc/nodogsplash/logo.png"
 
 wget -q "$LOGO_URL" -O "$LOGO_PATH" || {
-    # Fallback if download fails
     echo -n "[Using fallback logo] "
     touch "$LOGO_PATH"
 }
 
 LOGO_BASE64=$(base64 -w 0 "$LOGO_PATH" 2>/dev/null || base64 "$LOGO_PATH")
+
 cat > /etc/nodogsplash/splash.html <<EOL
 <!DOCTYPE html>
 <html>
@@ -108,9 +108,7 @@ cat > /etc/nodogsplash/splash.html <<EOL
         <h1>On Demand WIFI Setup</h1>
         <p>Please configure your WiFi network</p>
         
-        <form action="/nodogsplash/auth" method="post">
-            <input type="hidden" name="tok" value="$tok">
-            <input type="hidden" name="redir" value="http://192.168.1.1/setwifi">
+        <form action="/nodogsplash/setwifi" method="post">
             <input type="text" name="ssid" placeholder="WiFi Name (SSID)" required value="On Demand WIFI">
             <input type="password" name="password" placeholder="Password" required>
             <button type="submit">Save Settings</button>
@@ -121,38 +119,37 @@ cat > /etc/nodogsplash/splash.html <<EOL
 EOL
 check_success $?
 
+echo -n "[Post 7] Setting splash page location... "
+mkdir -p /etc/nodogsplash/htdocs/
+mv /etc/nodogsplash/splash.html /etc/nodogsplash/htdocs/splash.html
+check_success $?
+
 echo -n "[8/8] Configuring WiFi settings and handler... "
 
-# Set default WiFi settings (temporary until user changes them)
 uci set wireless.@wifi-iface[0].ssid="On Demand WIFI"
 uci set wireless.@wifi-iface[0].encryption="psk2"
 uci set wireless.@wifi-iface[0].key="ondemand123"
 uci commit wireless
 
-# Create the WiFi setup handler
 cat > /etc/nodogsplash/setwifi <<'EOL'
 #!/bin/sh
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
-    # Get SSID and password from form
-    SSID=$(echo "$QUERY_STRING" | sed -n 's/.*ssid=\([^&]*\).*/\1/p' | sed 's/%20/ /g')
-    PASSWORD=$(echo "$QUERY_STRING" | sed -n 's/.*password=\([^&]*\).*/\1/p')
+    read POST_DATA
+    SSID=$(echo "$POST_DATA" | sed -n 's/.*ssid=\([^&]*\).*/\1/p' | sed 's/%20/ /g')
+    PASSWORD=$(echo "$POST_DATA" | sed -n 's/.*password=\([^&]*\).*/\1/p')
 
-    # Permanently set new WiFi credentials
     uci set wireless.@wifi-iface[0].ssid="$SSID"
     uci set wireless.@wifi-iface[0].key="$PASSWORD"
     uci commit wireless
 
-    # COMPLETELY REMOVE NODOGSPLASH (so it never comes back)
     /etc/init.d/nodogsplash stop
     /etc/init.d/nodogsplash disable
     opkg remove --autoremove nodogsplash
     rm -rf /etc/nodogsplash
 
-    # Restart network to apply changes
     /etc/init.d/network restart
 
-    # Show success page
     cat <<EOF
 HTTP/1.1 200 OK
 Content-Type: text/html
@@ -186,7 +183,6 @@ EOL
 chmod +x /etc/nodogsplash/setwifi
 check_success $?
 
-# Start nodogsplash (it will self-destruct after setup)
 /etc/init.d/nodogsplash enable
 /etc/init.d/nodogsplash restart
 
