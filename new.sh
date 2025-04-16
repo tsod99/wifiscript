@@ -29,7 +29,7 @@ LEDS="blue:internet blue:status blue:wifi2 blue:wifi5"
 SCAN_INTERVAL=30
 WIFI_ON_DELAY=10
 
-echo "[♻️] Starting WiFi Manager..
+echo "[♻️] Starting WiFi Manager.."
 
 wifi_on() {
     echo "[🔛] Turning WiFi ON..."
